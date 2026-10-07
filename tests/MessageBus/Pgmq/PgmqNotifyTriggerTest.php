@@ -83,6 +83,34 @@ final readonly class PgmqNotifyTriggerTest
         Assert::true($handler->received->isComplete());
     }
 
+    public function consumerStartRestoresNotificationsLostInCrashRecovery(): void
+    {
+        $postgres = self::postgres();
+        $transport = new PgmqTransport($postgres, pollInterval: TimeSpan::fromSeconds(10));
+        $queue = self::createQueue($transport);
+
+        // pgmq.notify_insert_throttle is UNLOGGED: crash recovery (or a promoted replica) leaves it empty, and the
+        // trigger notifies only when it finds the queue's row. A consumer (re)start must bring notifications back.
+        $postgres->execute('DELETE FROM pgmq.notify_insert_throttle WHERE queue_name = ?', [$queue]);
+
+        $handler = new SignallingHandler();
+        $consumer = $transport->startConsumer($queue, $handler);
+
+        try {
+            // Let the consumer make its initial (empty) read first, so only a notification can deliver the message.
+            delay(0.2);
+            $transport->dispatch([self::envelope($queue)]);
+
+            $handler->received->getFuture()->await(new TimeoutCancellation(2));
+        } finally {
+            $consumer->stop();
+            $consumer->awaitCompletion();
+            Pgmq\dropQueue($postgres, $queue);
+        }
+
+        Assert::true($handler->received->isComplete());
+    }
+
     private static function postgres(): PostgresConnection
     {
         $dsn = getenv('THESIS_PGMQ_DSN');
