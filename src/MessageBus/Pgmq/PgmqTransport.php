@@ -58,7 +58,11 @@ final readonly class PgmqTransport implements TransactionalDispatcher, Receiver,
     public function createQueue(string $name): void
     {
         Pgmq\createExtension($this->postgres);
-        Pgmq\createQueue($this->postgres, $name);
+        $queue = Pgmq\createQueue($this->postgres, $name);
+
+        // Notifications are part of the queue setup, not of a consumer start: (re)creating the trigger takes a table
+        // lock that waits for every open transaction inserting into the queue and blocks new inserts meanwhile.
+        $queue->enableNotifyInsert();
 
         $this->postgres->query('create schema if not exists thesis_message_bus;');
         $this->postgres->query(
@@ -189,7 +193,7 @@ final readonly class PgmqTransport implements TransactionalDispatcher, Receiver,
             $timeoutWatcher,
             new ChannelWatcher(
                 $polls,
-                $this->postgres->listen($queue->enableNotifyInsert()),
+                $this->postgres->listen(Pgmq\channelName($queue->name)),
                 $timeoutWatcher,
             ),
         ]);
